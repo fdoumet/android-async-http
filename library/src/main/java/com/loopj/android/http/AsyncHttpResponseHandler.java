@@ -30,8 +30,11 @@ import org.apache.http.StatusLine;
 import org.apache.http.client.HttpResponseException;
 import org.apache.http.util.ByteArrayBuffer;
 
+import com.loopj.android.http.AsyncHttpRequest;
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.net.URI;
 
 /**
@@ -448,7 +451,11 @@ public abstract class AsyncHttpResponseHandler implements ResponseHandlerInterfa
                     sendSuccessMessage(status.getStatusCode(), response.getAllHeaders(), responseBody);
                 }
             }
+            else
+            	sendCancelMessage();
         }
+        else
+        	sendCancelMessage();
     }
 
     /**
@@ -477,9 +484,22 @@ public abstract class AsyncHttpResponseHandler implements ResponseHandlerInterfa
                         while ((l = instream.read(tmp)) != -1 && !Thread.currentThread().isInterrupted()) {
                             count += l;
                             buffer.append(tmp, 0, l);
-                            sendProgressMessage(count, (int) (contentLength <= 0 ? 1 : contentLength));
+                            if (!Thread.currentThread().isInterrupted())
+                            	sendProgressMessage(count, (int) (contentLength <= 0 ? 1 : contentLength));
+                            else
+                            	sendCancelMessage();
                         }
-                    } finally {
+                    }catch (InterruptedIOException e)
+                    {
+                    	Log.e(AsyncHttpRequest.class.getSimpleName(), e.getLocalizedMessage() != null ? e.getLocalizedMessage() : "InterruptedIOException!");
+            			e.printStackTrace();
+            			if (e.getClass().isAssignableFrom(InterruptedException.class))
+            			{
+            				Thread.currentThread().interrupt();
+            				sendCancelMessage();
+            			}
+                    }
+                    finally {
                         AsyncHttpClient.silentCloseInputStream(instream);
                         AsyncHttpClient.endEntityViaReflection(entity);
                     }

@@ -27,6 +27,7 @@ import org.apache.http.impl.client.AbstractHttpClient;
 import org.apache.http.protocol.HttpContext;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.net.MalformedURLException;
 import java.net.UnknownHostException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -106,7 +107,19 @@ public class AsyncHttpRequest implements Runnable {
 
         try {
             makeRequestWithRetries();
-        } catch (IOException e) {
+        } 
+        catch (InterruptedIOException e){
+	        	Log.e("AsyncHttpRequest", "InterruptedIOException", e);
+	        	// Cancel if we were intentionally interrupted
+	        	if (e.getClass().isAssignableFrom(InterruptedIOException.class))
+	        		responseHandler.sendCancelMessage();
+	        	else if (!isCancelled()) {
+	                responseHandler.sendFailureMessage(0, null, null, e);
+	            } else {
+	                Log.e("AsyncHttpRequest", "makeRequestWithRetries returned error", e);
+	            }
+	        }
+        catch (IOException e) {
             if (!isCancelled()) {
                 responseHandler.sendFailureMessage(0, null, null, e);
             } else {
@@ -146,7 +159,7 @@ public class AsyncHttpRequest implements Runnable {
         }
 
         HttpResponse response = client.execute(request, context);
-
+        
         if (isCancelled()) {
             return;
         }
@@ -190,7 +203,27 @@ public class AsyncHttpRequest implements Runnable {
                     // http://code.google.com/p/android/issues/detail?id=5255
                     cause = new IOException("NPE in HttpClient: " + e.getMessage());
                     retry = retryHandler.retryRequest(cause, ++executionCount, context);
-                } catch (IOException e) {
+                }
+                catch (InterruptedIOException e)
+                {
+                	Log.e("AsyncHttpRequest", "InterruptedIOException", e);
+                	// Cancel if we were intentionally interrupted
+                	if (e.getClass().isAssignableFrom(InterruptedIOException.class))
+                	{
+                		cancel(true);
+                		break;
+                	}
+                	else
+                	{
+                		if (isCancelled()) {
+                            // Eating exception, as the request was cancelled
+                            return;
+                        }
+                        cause = e;
+                        retry = retryHandler.retryRequest(cause, ++executionCount, context);
+                	}
+                }
+                catch (IOException e) {
                     if (isCancelled()) {
                         // Eating exception, as the request was cancelled
                         return;
