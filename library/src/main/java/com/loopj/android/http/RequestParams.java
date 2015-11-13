@@ -1,13 +1,13 @@
 /*
     Android Asynchronous Http Client
     Copyright (c) 2011 James Smith <james@loopj.com>
-    http://loopj.com
+    https://loopj.com
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
 
-        http://www.apache.org/licenses/LICENSE-2.0
+        https://www.apache.org/licenses/LICENSE-2.0
 
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,14 +17,6 @@
 */
 
 package com.loopj.android.http;
-
-import android.util.Log;
-
-import org.apache.http.HttpEntity;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
-import org.apache.http.client.utils.URLEncodedUtils;
-import org.apache.http.message.BasicNameValuePair;
-import org.apache.http.protocol.HTTP;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -38,9 +30,16 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import cz.msebera.android.httpclient.HttpEntity;
+import cz.msebera.android.httpclient.client.entity.UrlEncodedFormEntity;
+import cz.msebera.android.httpclient.client.utils.URLEncodedUtils;
+import cz.msebera.android.httpclient.message.BasicNameValuePair;
+import cz.msebera.android.httpclient.protocol.HTTP;
 
 /**
  * A collection of string request parameters or files to send along with requests made from an
@@ -67,10 +66,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * List&lt;String&gt; list = new ArrayList&lt;String&gt;(); // Ordered collection
  * list.add("Java");
  * list.add("C");
- * params.put("languages", list); // url params: "languages[]=Java&amp;languages[]=C"
+ * params.put("languages", list); // url params: "languages[0]=Java&amp;languages[1]=C"
  *
  * String[] colors = { "blue", "yellow" }; // Ordered collection
- * params.put("colors", colors); // url params: "colors[]=blue&amp;colors[]=yellow"
+ * params.put("colors", colors); // url params: "colors[0]=blue&amp;colors[1]=yellow"
+ *
+ * File[] files = { new File("pic.jpg"), new File("pic1.jpg") }; // Ordered collection
+ * params.put("files", files); // url params: "files[]=pic.jpg&amp;files[]=pic1.jpg"
  *
  * List&lt;Map&lt;String, String&gt;&gt; listOfMaps = new ArrayList&lt;Map&lt;String,
  * String&gt;&gt;();
@@ -85,7 +87,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * params.put("users", listOfMaps); // url params: "users[][age]=30&amp;users[][gender]=male&amp;users[][age]=25&amp;users[][gender]=female"
  *
  * AsyncHttpClient client = new AsyncHttpClient();
- * client.post("http://myendpoint.com", params, responseHandler);
+ * client.post("https://myendpoint.com", params, responseHandler);
  * </pre>
  */
 public class RequestParams implements Serializable {
@@ -97,28 +99,17 @@ public class RequestParams implements Serializable {
             "application/json";
 
     protected final static String LOG_TAG = "RequestParams";
-    protected boolean isRepeatable;
-    protected boolean useJsonStreamer;
-    protected boolean autoCloseInputStreams;
     protected final ConcurrentHashMap<String, String> urlParams = new ConcurrentHashMap<String, String>();
     protected final ConcurrentHashMap<String, StreamWrapper> streamParams = new ConcurrentHashMap<String, StreamWrapper>();
     protected final ConcurrentHashMap<String, FileWrapper> fileParams = new ConcurrentHashMap<String, FileWrapper>();
+    protected final ConcurrentHashMap<String, List<FileWrapper>> fileArrayParams = new ConcurrentHashMap<String, List<FileWrapper>>();
     protected final ConcurrentHashMap<String, Object> urlParamsWithObjects = new ConcurrentHashMap<String, Object>();
+    protected boolean isRepeatable;
+    protected boolean forceMultipartEntity = false;
+    protected boolean useJsonStreamer;
+    protected String elapsedFieldInJsonStreamer = "_elapsed";
+    protected boolean autoCloseInputStreams;
     protected String contentEncoding = HTTP.UTF_8;
-
-    /**
-     * Sets content encoding for return value of {@link #getParamString()} and {@link
-     * #createFormEntity()} <p>&nbsp;</p> Default encoding is "UTF-8"
-     *
-     * @param encoding String constant from {@link org.apache.http.protocol.HTTP}
-     */
-    public void setContentEncoding(final String encoding) {
-        if (encoding != null) {
-            this.contentEncoding = encoding;
-        } else {
-            Log.d(LOG_TAG, "setContentEncoding called with null attribute");
-        }
-    }
 
     /**
      * Constructs a new empty {@code RequestParams} instance.
@@ -174,6 +165,32 @@ public class RequestParams implements Serializable {
     }
 
     /**
+     * Sets content encoding for return value of {@link #getParamString()} and {@link
+     * #createFormEntity()} <p>&nbsp;</p> Default encoding is "UTF-8"
+     *
+     * @param encoding String constant from {@link HTTP}
+     */
+    public void setContentEncoding(final String encoding) {
+        if (encoding != null) {
+            this.contentEncoding = encoding;
+        } else {
+            AsyncHttpClient.log.d(LOG_TAG, "setContentEncoding called with null attribute");
+        }
+    }
+
+    /**
+     * If set to true will force Content-Type header to `multipart/form-data`
+     * even if there are not Files or Streams to be send
+     * <p>&nbsp;</p>
+     * Default value is false
+     *
+     * @param force boolean, should declare content-type multipart/form-data even without files or streams present
+     */
+    public void setForceMultipartEntityContentType(boolean force) {
+        this.forceMultipartEntity = force;
+    }
+
+    /**
      * Adds a key/value string pair to the request.
      *
      * @param key   the key name for the new param.
@@ -186,11 +203,45 @@ public class RequestParams implements Serializable {
     }
 
     /**
+     * Adds files array to the request.
+     *
+     * @param key   the key name for the new param.
+     * @param files the files array to add.
+     * @throws FileNotFoundException if one of passed files is not found at time of assembling the requestparams into request
+     */
+    public void put(String key, File files[]) throws FileNotFoundException {
+        put(key, files, null, null);
+    }
+
+    /**
+     * Adds files array to the request with both custom provided file content-type and files name
+     *
+     * @param key            the key name for the new param.
+     * @param files          the files array to add.
+     * @param contentType    the content type of the file, eg. application/json
+     * @param customFileName file name to use instead of real file name
+     * @throws FileNotFoundException throws if wrong File argument was passed
+     */
+    public void put(String key, File files[], String contentType, String customFileName) throws FileNotFoundException {
+
+        if (key != null) {
+            List<FileWrapper> fileWrappers = new ArrayList<FileWrapper>();
+            for (File file : files) {
+                if (file == null || !file.exists()) {
+                    throw new FileNotFoundException();
+                }
+                fileWrappers.add(new FileWrapper(file, contentType, customFileName));
+            }
+            fileArrayParams.put(key, fileWrappers);
+        }
+    }
+
+    /**
      * Adds a file to the request.
      *
      * @param key  the key name for the new param.
      * @param file the file to add.
-     * @throws java.io.FileNotFoundException throws if wrong File argument was passed
+     * @throws FileNotFoundException throws if wrong File argument was passed
      */
     public void put(String key, File file) throws FileNotFoundException {
         put(key, file, null, null);
@@ -202,7 +253,7 @@ public class RequestParams implements Serializable {
      * @param key            the key name for the new param.
      * @param file           the file to add.
      * @param customFileName file name to use instead of real file name
-     * @throws java.io.FileNotFoundException throws if wrong File argument was passed
+     * @throws FileNotFoundException throws if wrong File argument was passed
      */
     public void put(String key, String customFileName, File file) throws FileNotFoundException {
         put(key, file, null, customFileName);
@@ -214,7 +265,7 @@ public class RequestParams implements Serializable {
      * @param key         the key name for the new param.
      * @param file        the file to add.
      * @param contentType the content type of the file, eg. application/json
-     * @throws java.io.FileNotFoundException throws if wrong File argument was passed
+     * @throws FileNotFoundException throws if wrong File argument was passed
      */
     public void put(String key, File file, String contentType) throws FileNotFoundException {
         put(key, file, contentType, null);
@@ -227,7 +278,7 @@ public class RequestParams implements Serializable {
      * @param file           the file to add.
      * @param contentType    the content type of the file, eg. application/json
      * @param customFileName file name to use instead of real file name
-     * @throws java.io.FileNotFoundException throws if wrong File argument was passed
+     * @throws FileNotFoundException throws if wrong File argument was passed
      */
     public void put(String key, File file, String contentType, String customFileName) throws FileNotFoundException {
         if (file == null || !file.exists()) {
@@ -354,6 +405,7 @@ public class RequestParams implements Serializable {
         streamParams.remove(key);
         fileParams.remove(key);
         urlParamsWithObjects.remove(key);
+        fileArrayParams.remove(key);
     }
 
     /**
@@ -366,7 +418,8 @@ public class RequestParams implements Serializable {
         return urlParams.get(key) != null ||
                 streamParams.get(key) != null ||
                 fileParams.get(key) != null ||
-                urlParamsWithObjects.get(key) != null;
+                urlParamsWithObjects.get(key) != null ||
+                fileArrayParams.get(key) != null;
     }
 
     @Override
@@ -399,6 +452,15 @@ public class RequestParams implements Serializable {
             result.append("FILE");
         }
 
+        for (ConcurrentHashMap.Entry<String, List<FileWrapper>> entry : fileArrayParams.entrySet()) {
+            if (result.length() > 0)
+                result.append("&");
+
+            result.append(entry.getKey());
+            result.append("=");
+            result.append("FILES(SIZE=").append(entry.getValue().size()).append(")");
+        }
+
         List<BasicNameValuePair> params = getParamsList(null, urlParamsWithObjects);
         for (BasicNameValuePair kv : params) {
             if (result.length() > 0)
@@ -412,12 +474,25 @@ public class RequestParams implements Serializable {
         return result.toString();
     }
 
-    public void setHttpEntityIsRepeatable(boolean isRepeatable) {
-        this.isRepeatable = isRepeatable;
+    public void setHttpEntityIsRepeatable(boolean flag) {
+        this.isRepeatable = flag;
     }
 
-    public void setUseJsonStreamer(boolean useJsonStreamer) {
-        this.useJsonStreamer = useJsonStreamer;
+    public void setUseJsonStreamer(boolean flag) {
+        this.useJsonStreamer = flag;
+    }
+
+    /**
+     * Sets an additional field when upload a JSON object through the streamer
+     * to hold the time, in milliseconds, it took to upload the payload. By
+     * default, this field is set to "_elapsed".
+     * <p>&nbsp;</p>
+     * To disable this feature, call this method with null as the field value.
+     *
+     * @param value field name to add elapsed time, or null to disable
+     */
+    public void setElapsedFieldInJsonStreamer(String value) {
+        this.elapsedFieldInJsonStreamer = value;
     }
 
     /**
@@ -435,13 +510,13 @@ public class RequestParams implements Serializable {
      *
      * @param progressHandler HttpResponseHandler for reporting progress on entity submit
      * @return HttpEntity resulting HttpEntity to be included along with {@link
-     * org.apache.http.client.methods.HttpEntityEnclosingRequestBase}
+     * cz.msebera.android.httpclient.client.methods.HttpEntityEnclosingRequestBase}
      * @throws IOException if one of the streams cannot be read
      */
     public HttpEntity getEntity(ResponseHandlerInterface progressHandler) throws IOException {
         if (useJsonStreamer) {
             return createJsonStreamerEntity(progressHandler);
-        } else if (streamParams.isEmpty() && fileParams.isEmpty()) {
+        } else if (!forceMultipartEntity && streamParams.isEmpty() && fileParams.isEmpty() && fileArrayParams.isEmpty()) {
             return createFormEntity();
         } else {
             return createMultipartEntity(progressHandler);
@@ -449,8 +524,10 @@ public class RequestParams implements Serializable {
     }
 
     private HttpEntity createJsonStreamerEntity(ResponseHandlerInterface progressHandler) throws IOException {
-        JsonStreamerEntity entity = new JsonStreamerEntity(progressHandler,
-                !fileParams.isEmpty() || !streamParams.isEmpty());
+        JsonStreamerEntity entity = new JsonStreamerEntity(
+                progressHandler,
+                !fileParams.isEmpty() || !streamParams.isEmpty(),
+                elapsedFieldInJsonStreamer);
 
         // Add string params
         for (ConcurrentHashMap.Entry<String, String> entry : urlParams.entrySet()) {
@@ -488,7 +565,7 @@ public class RequestParams implements Serializable {
         try {
             return new UrlEncodedFormEntity(getParamsList(), contentEncoding);
         } catch (UnsupportedEncodingException e) {
-            Log.e(LOG_TAG, "createFormEntity failed", e);
+            AsyncHttpClient.log.e(LOG_TAG, "createFormEntity failed", e);
             return null; // Can happen, if the 'contentEncoding' won't be HTTP.UTF_8
         }
     }
@@ -523,6 +600,14 @@ public class RequestParams implements Serializable {
             entity.addPart(entry.getKey(), fileWrapper.file, fileWrapper.contentType, fileWrapper.customFileName);
         }
 
+        // Add file collection
+        for (ConcurrentHashMap.Entry<String, List<FileWrapper>> entry : fileArrayParams.entrySet()) {
+            List<FileWrapper> fileWrapper = entry.getValue();
+            for (FileWrapper fw : fileWrapper) {
+                entity.addPart(entry.getKey(), fw.file, fw.contentType, fw.customFileName);
+            }
+        }
+
         return entity;
     }
 
@@ -551,7 +636,7 @@ public class RequestParams implements Serializable {
                 if (nestedKey instanceof String) {
                     Object nestedValue = map.get(nestedKey);
                     if (nestedValue != null) {
-                        params.addAll(getParamsList(key == null ? (String) nestedKey : String.format("%s[%s]", key, nestedKey),
+                        params.addAll(getParamsList(key == null ? (String) nestedKey : String.format(Locale.US, "%s[%s]", key, nestedKey),
                                 nestedValue));
                     }
                 }
@@ -560,13 +645,13 @@ public class RequestParams implements Serializable {
             List list = (List) value;
             int listSize = list.size();
             for (int nestedValueIndex = 0; nestedValueIndex < listSize; nestedValueIndex++) {
-                params.addAll(getParamsList(String.format("%s[%d]", key, nestedValueIndex), list.get(nestedValueIndex)));
+                params.addAll(getParamsList(String.format(Locale.US, "%s[%d]", key, nestedValueIndex), list.get(nestedValueIndex)));
             }
         } else if (value instanceof Object[]) {
             Object[] array = (Object[]) value;
             int arrayLength = array.length;
             for (int nestedValueIndex = 0; nestedValueIndex < arrayLength; nestedValueIndex++) {
-                params.addAll(getParamsList(String.format("%s[%d]", key, nestedValueIndex), array[nestedValueIndex]));
+                params.addAll(getParamsList(String.format(Locale.US, "%s[%d]", key, nestedValueIndex), array[nestedValueIndex]));
             }
         } else if (value instanceof Set) {
             Set set = (Set) value;
